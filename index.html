@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>灵感追随 AR | 物理交互实验室</title>
+    <!-- 引入基础 3D 引擎 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- 引入 MediaPipe 稳定版 -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; touch-action: none; }
+        body {
+            background-color: #fff; 
+            overflow: hidden;
+            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+            cursor: crosshair;
+            -webkit-user-select: none; user-select: none;
+            transition: background-color 0.8s ease;
+        }
+        body.mode-works { background-color: #fcfcfc; }
+
+        /* 顶部导航 */
+        .top-nav {
+            position: fixed;
+            top: 0; left: 0; width: 100%;
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 24px 48px; z-index: 1000;
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+        }
+        .nav-logo {
+            font-size: 20px; font-weight: 900; color: #111;
+            letter-spacing: -0.04em; text-decoration: none; text-transform: uppercase;
+        }
+        .nav-links { display: flex; gap: 40px; }
+        .nav-links a {
+            font-size: 11px; font-weight: 700; color: #111;
+            text-decoration: none; letter-spacing: -0.04em; text-transform: uppercase;
+            opacity: 0.6; transition: opacity 0.3s;
+            position: relative;
+            cursor: pointer;
+        }
+        .nav-links a.active { opacity: 1; color: #FF2442; }
+        .nav-links a:hover { opacity: 1; }
+
+        /* 全屏视频背景 */
+        #video-feed { 
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; 
+            object-fit: cover; transform: scaleX(-1); 
+            filter: grayscale(1) contrast(1.1); 
+            opacity: 0.1; z-index: 1;
+            transition: opacity 0.6s ease;
+            pointer-events: none;
+        }
+        #video-feed.hidden { opacity: 0 !important; }
+
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 10; pointer-events: none; }
+        #canvas-container canvas { pointer-events: auto; }
+
+        /* 摄像机控制按钮 */
+        .camera-toggle {
+            position: fixed; bottom: 40px; right: 48px; z-index: 1000;
+            background: rgba(255, 255, 255, 0.9); border: 1px solid #111;
+            padding: 10px 20px; font-size: 10px; font-weight: 800;
+            letter-spacing: 0.1em; text-transform: uppercase;
+            cursor: pointer; display: flex; align-items: center; gap: 10px;
+        }
+        .toggle-dot { width: 6px; height: 6px; border-radius: 50%; background: #00D981; }
+        .camera-toggle.off .toggle-dot { background: #ccc; }
+
+        /* WORKS 网格 */
+        #works-container {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            overflow-y: auto; overflow-x: hidden; z-index: 50; 
+            pointer-events: none; opacity: 0; transition: opacity 0.5s ease;
+        }
+        #works-container.active { pointer-events: auto; opacity: 1; }
+        .works-grid { display: grid; grid-template-columns: repeat(5, 1fr); margin-top: 80px; border-left: 1px solid rgba(0,0,0,0.1); }
+        @media (max-width: 900px) { .works-grid { grid-template-columns: repeat(2, 1fr); } }
+
+        .works-cell {
+            position: relative; aspect-ratio: 4/5; 
+            border-right: 1px solid rgba(0,0,0,0.1); border-bottom: 1px solid rgba(0,0,0,0.1);
+            background: transparent; 
+            cursor: pointer; transition: background 0.3s;
+        }
+        .works-cell:hover { background: rgba(0, 0, 0, 0.02); }
+        .cell-text { position: absolute; font-size: 9px; text-transform: uppercase; color: #111; font-weight: 600; letter-spacing: -0.04em; pointer-events: none; }
+        .cell-top-left { top: 12px; left: 12px; }
+        .cell-top-right { top: 12px; right: 12px; text-align: right; max-width: 60%; color: #666;}
+
+        /* 详情页 */
+        #project-detail {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: #ffffff; z-index: 2000; overflow-y: auto;
+            transform: translateY(100%); transition: transform 0.7s cubic-bezier(0.85, 0, 0.15, 1);
+            cursor: pointer;
+        }
+        #project-detail.active { transform: translateY(0); }
+        .detail-header-space { height: 160px; width: 100%; display: flex; align-items: flex-end; padding: 0 8vw 48px; }
+        .detail-project-title { font-size: 32px; font-weight: 800; color: #111; letter-spacing: -0.04em; }
+        .image-flow { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 40px; padding-bottom: 120px; }
+        .image-flow img { width: 85vw; max-width: 1300px; height: auto; border-radius: 4px; box-shadow: 0 40px 80px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body class="mode-playground">
+
+    <nav class="top-nav">
+        <a class="nav-logo" onclick="switchMode('PLAYGROUND')">REDesign</a>
+        <div class="nav-links">
+            <a id="nav-playground" class="active" onclick="switchMode('PLAYGROUND')">PLAYGROUND</a>
+            <a id="nav-works" onclick="switchMode('WORKS')">WORKS</a>
+            <a onclick="location.reload()">ABOUT</a>
+        </div>
+    </nav>
+
+    <video id="video-feed" autoplay playsinline></video>
+    
+    <button id="camera-btn" class="camera-toggle" onclick="toggleCameraVisibility()">
+        <div class="toggle-dot"></div>
+        <span>Camera View: On</span>
+    </button>
+
+    <div id="works-container">
+        <div class="works-grid" id="works-grid"></div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <div id="project-detail" onclick="handleDetailClick(event)">
+        <div class="detail-header-space">
+            <h2 class="detail-project-title" id="detail-title">Project Title</h2>
+        </div>
+        <div class="image-flow" id="image-flow"></div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('video-feed');
+        const worksContainer = document.getElementById('works-container');
+        const worksGrid = document.getElementById('works-grid');
+        const cameraBtn = document.getElementById('camera-btn');
+
+        let scene, camera, renderer, ideas = [];
+        let silhouetteLandmarks = []; 
+        let currentMode = 'PLAYGROUND';
+        let isDetailOpen = false;
+        let wuPerPx = 0;
+        let isCameraVisible = true;
+        let mousePosition = new THREE.Vector2(-1000, -1000);
+        let cameraActive = false;
+
+        // --- 交互与拖拽变量 ---
+        let isDragging = false;
+        let draggedObject = null;
+        let longPressTimer = null;
+        const LONG_PRESS_THRESHOLD = 250; 
+
+        // 样式库配置
+        const palette = ['#FF2442', '#3A86FF', '#00D981', '#FFD166', '#8338EC', '#FF00FF', '#00FFFF', '#111111'];
+        const patternTypes = ['rays', 'target', 'star', 'segmented', 'burst', 'grid', 'dots-ring', 'stripes', 'checker', 'cross'];
+        const projectAssets = [];
+        for(let i=0; i<60; i++) {
+            projectAssets.push({
+                title: `PROJECT ${i+1}`,
+                en: `Visual Concept ${i+1}`,
+                mainColor: palette[i % palette.length],
+                secondColor: palette[(i + 2) % palette.length],
+                pattern: patternTypes[i % patternTypes.length]
+            });
+        }
+
+        const SILHOUETTE_INDICES = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+
+        // 1. AI 追踪
+        const faceMesh = new FaceMesh({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}` });
+        faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        faceMesh.onResults(onFaceResults);
+
+        function onFaceResults(results) {
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const landmarks = results.multiFaceLandmarks[0];
+                if (camera) {
+                    const vFOV = camera.fov * Math.PI / 180;
+                    const h = 2 * Math.tan(vFOV / 2) * camera.position.z;
+                    const w = h * camera.aspect;
+                    silhouetteLandmarks = SILHOUETTE_INDICES.map(idx => {
+                        const pt = landmarks[idx];
+                        return { x: (0.5 - pt.x) * w, y: (0.5 - pt.y) * h - 15 };
+                    });
+                }
+            }
+        }
+
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => { if(cameraActive) await faceMesh.send({image: videoElement}); },
+            width: 1280, height: 720
+        });
+
+        function setCameraStatus(active) {
+            cameraActive = active;
+            if (!active) {
+                const stream = videoElement.srcObject;
+                if (stream) stream.getTracks().forEach(track => track.stop());
+                videoElement.srcObject = null;
+            } else {
+                cameraUtils.start();
+            }
+        }
+
+        function toggleCameraVisibility() { isCameraVisible = !isCameraVisible; updateCameraView(); }
+        function updateCameraView() {
+            if (isCameraVisible && currentMode === 'PLAYGROUND') {
+                videoElement.classList.remove('hidden');
+                cameraBtn.classList.remove('off');
+                cameraBtn.querySelector('span').innerText = "Camera View: On";
+            } else {
+                videoElement.classList.add('hidden');
+                cameraBtn.classList.add('off');
+                cameraBtn.querySelector('span').innerText = "Camera View: Off";
+            }
+        }
+
+        // 2. Three.js 初始化
+        function initThreeJS() {
+            const container = document.getElementById('canvas-container');
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 100;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            container.appendChild(renderer.domElement);
+
+            const vFOV = THREE.MathUtils.degToRad(camera.fov);
+            const heightAtZ0 = 2 * Math.tan(vFOV / 2) * camera.position.z;
+            wuPerPx = heightAtZ0 / window.innerHeight;
+
+            for (let i = 0; i < 60; i++) {
+                const data = projectAssets[i];
+                const cell = document.createElement('div');
+                cell.className = 'works-cell';
+                cell.id = `cell-${i}`;
+                cell.innerHTML = `<div class="cell-text cell-top-left">${(i + 1).toString().padStart(2, '0')}</div><div class="cell-text cell-top-right">${data.title}<br/><span style="color:#aaa">${data.en}</span></div>`;
+                cell.onclick = () => openDetail(data);
+                worksGrid.appendChild(cell);
+            }
+
+            for (let i = 0; i < 360; i++) createOpArtDot(i);
+            animate();
+        }
+
+        function createOpArtDot(index) {
+            const data = projectAssets[index % projectAssets.length];
+            const radius = 1.4 + Math.random() * 1.0; 
+            
+            const canvasTex = document.createElement('canvas');
+            canvasTex.width = 256; canvasTex.height = 256;
+            const ctx = canvasTex.getContext('2d');
+            const mid = 128;
+            
+            ctx.fillStyle = data.mainColor;
+            ctx.beginPath(); ctx.arc(mid, mid, 124, 0, Math.PI * 2); ctx.fill();
+            ctx.clip();
+            ctx.strokeStyle = data.secondColor;
+            ctx.fillStyle = data.secondColor;
+            ctx.lineWidth = 12;
+
+            switch(data.pattern) {
+                case 'rays': ctx.save(); ctx.translate(mid, mid); for(let i=0; i<16; i++) { ctx.rotate(Math.PI / 8); ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(150, 20); ctx.lineTo(150, -20); ctx.fill(); } ctx.restore(); break;
+                case 'target': ctx.lineWidth = 20; for(let r=100; r>0; r-=40) { ctx.strokeStyle = (r/40 % 2 === 0) ? data.secondColor : '#fff'; ctx.beginPath(); ctx.arc(mid, mid, r, 0, Math.PI*2); ctx.stroke(); } break;
+                case 'star': ctx.beginPath(); ctx.moveTo(mid, 10); ctx.lineTo(mid+30, mid-30); ctx.lineTo(246, mid); ctx.lineTo(mid+30, mid+30); ctx.lineTo(mid, 246); ctx.lineTo(mid-30, mid+30); ctx.lineTo(10, mid); ctx.lineTo(mid-30, mid-30); ctx.closePath(); ctx.fill(); break;
+                case 'segmented': for(let i=0; i<8; i++) { ctx.fillStyle = (i % 2 === 0) ? data.secondColor : palette[(index+3)%palette.length]; ctx.beginPath(); ctx.moveTo(mid, mid); ctx.arc(mid, mid, 128, i*Math.PI/4, (i+1)*Math.PI/4); ctx.fill(); } break;
+                case 'burst': ctx.fillStyle = '#fff'; for(let i=0; i<12; i++) { const ang = i * (Math.PI*2/12); ctx.beginPath(); ctx.arc(mid + Math.cos(ang)*80, mid + Math.sin(ang)*80, 20, 0, Math.PI*2); ctx.fill(); } ctx.beginPath(); ctx.arc(mid, mid, 40, 0, Math.PI*2); ctx.fill(); break;
+                case 'grid': ctx.lineWidth = 4; for(let i=0; i<15; i++) { ctx.strokeRect(i*20, 0, 1, 256); ctx.strokeRect(0, i*20, 256, 1); } break;
+                case 'dots-ring': ctx.beginPath(); ctx.arc(mid, mid, 60, 0, Math.PI*2); ctx.stroke(); for(let i=0; i<8; i++) { const ang = i * (Math.PI/4); ctx.beginPath(); ctx.arc(mid + Math.cos(ang)*60, mid + Math.sin(ang)*60, 15, 0, Math.PI*2); ctx.fill(); } break;
+                case 'stripes': ctx.lineWidth = 25; for(let i=-5; i<10; i++) { ctx.beginPath(); ctx.moveTo(0, i*50); ctx.lineTo(256, i*50+100); ctx.stroke(); } break;
+                case 'checker': const size = 32; for(let x=0; x<8; x++) for(let y=0; y<8; y++) if((x+y)%2 === 0) ctx.fillRect(x*size, y*size, size, size); break;
+                case 'cross': ctx.fillRect(mid-40, 0, 80, 256); ctx.fillStyle = '#fff'; ctx.fillRect(0, mid-40, 256, 80); break;
+            }
+
+            const texture = new THREE.CanvasTexture(canvasTex);
+            const geometry = new THREE.CircleGeometry(radius, 32);
+            const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
+            const mesh = new THREE.Mesh(geometry, material);
+            
+            // --- 强化：爆发速度更快 ---
+            mesh.position.set(0, 0, 0);
+            const burstAngle = Math.random() * Math.PI * 2;
+            const burstSpeed = 8.0 + Math.random() * 12.0; // 提升初速度
+            const initialVelX = Math.cos(burstAngle) * burstSpeed;
+            const initialVelY = Math.sin(burstAngle) * burstSpeed;
+
+            mesh.userData = {
+                index: index, data: data, 
+                vel: new THREE.Vector3(initialVelX, initialVelY, 0),
+                projectIdx: index % 60, radius: radius,
+                anchorIdx: Math.floor(Math.random() * SILHOUETTE_INDICES.length),
+                // --- 强化：运动半径更大 ---
+                offset: new THREE.Vector3((Math.random()-0.5)*140, (Math.random()-0.5)*140, (Math.random()-0.5)*15),
+                stiffness: 0.0012 + Math.random() * 0.002, 
+                damping: 0.97 + Math.random() * 0.02, 
+                noiseScale: 0.01 + Math.random() * 0.015, 
+                maxVel: 0.18,
+                targetPos: new THREE.Vector3(), targetScale: 1
+            };
+            scene.add(mesh); ideas.push(mesh);
+        }
+
+        function switchMode(mode) {
+            if (isDetailOpen) closeDetail();
+            currentMode = mode;
+            document.body.className = `mode-${mode.toLowerCase()}`;
+            document.getElementById('nav-playground').className = (mode === 'PLAYGROUND' ? 'active' : '');
+            document.getElementById('nav-works').className = (mode === 'WORKS' ? 'active' : '');
+            worksContainer.classList.toggle('active', mode === 'WORKS');
+            cameraBtn.style.display = (mode === 'PLAYGROUND' ? 'flex' : 'none');
+            
+            if (mode === 'WORKS') {
+                setCameraStatus(false);
+                setTimeout(calcGridTargets, 50);
+            } else {
+                setCameraStatus(true);
+            }
+            updateCameraView();
+        }
+
+        function calcGridTargets() {
+            const currentScroll = worksContainer.scrollTop;
+            worksContainer.scrollTop = 0;
+            ideas.forEach((mesh) => {
+                const d = mesh.userData;
+                if (d.index < 60) {
+                    const cell = document.getElementById(`cell-${d.projectIdx}`);
+                    const rect = cell.getBoundingClientRect();
+                    const targetX = (rect.left + rect.width / 2 - window.innerWidth / 2) * wuPerPx;
+                    const targetY = -(rect.top + rect.height / 2 - window.innerHeight / 2) * wuPerPx;
+                    d.targetPos.set(targetX, targetY, 0);
+                    d.targetScale = 4.0; 
+                } else { 
+                    d.targetScale = 0; 
+                }
+            });
+            worksContainer.scrollTop = currentScroll;
+        }
+
+        const tempVec = new THREE.Vector3();
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (currentMode === 'PLAYGROUND') {
+                if (isDragging && draggedObject) {
+                    ideas.forEach(other => {
+                        if (other === draggedObject) return;
+                        const dist = draggedObject.position.distanceTo(other.position);
+                        const minDist = (draggedObject.userData.radius + other.userData.radius) * 1.1;
+                        if (dist < minDist) {
+                            const diff = other.position.clone().sub(draggedObject.position).normalize();
+                            const force = (minDist - dist) * 0.5;
+                            other.userData.vel.add(diff.multiplyScalar(force));
+                        }
+                    });
+                }
+
+                ideas.forEach((m) => {
+                    const d = m.userData;
+                    if (m === draggedObject && isDragging) return;
+
+                    d.vel.x += (Math.random() - 0.5) * d.noiseScale;
+                    d.vel.y += (Math.random() - 0.5) * d.noiseScale;
+
+                    if (silhouetteLandmarks.length > 0) {
+                        const anchor = silhouetteLandmarks[d.anchorIdx];
+                        const tx = anchor.x + d.offset.x;
+                        const ty = anchor.y + d.offset.y;
+                        d.vel.x += (tx - m.position.x) * d.stiffness;
+                        d.vel.y += (ty - m.position.y) * d.stiffness;
+                    } else {
+                        d.vel.x += (0 - m.position.x) * 0.0002;
+                        d.vel.y += (0 - m.position.y) * 0.0002;
+                    }
+
+                    tempVec.set(m.position.x / wuPerPx + window.innerWidth/2, -m.position.y / wuPerPx + window.innerHeight/2, 0);
+                    const distToMouse = tempVec.distanceTo(new THREE.Vector3(mousePosition.x, mousePosition.y, 0));
+                    
+                    if (distToMouse < 60) {
+                        const pushDir = tempVec.clone().sub(new THREE.Vector3(mousePosition.x, mousePosition.y, 0)).normalize();
+                        d.vel.x += pushDir.x * 0.012;
+                        d.vel.y -= pushDir.y * 0.012;
+                        d.vel.multiplyScalar(0.7);
+                        m.scale.lerp(new THREE.Vector3(1.2, 1.2, 1.2), 0.1);
+                    } else {
+                        d.vel.multiplyScalar(d.damping); 
+                        m.scale.lerp(new THREE.Vector3(1, 1, 1), 0.1);
+                    }
+
+                    const speed = d.vel.length();
+                    // 允许爆发阶段的高速，飞离中心 60 距离后开始限制常态速度
+                    if (m.position.length() > 60 && speed > d.maxVel) {
+                        d.vel.multiplyScalar(d.maxVel / speed);
+                    }
+
+                    m.position.add(d.vel);
+                    m.rotation.z += d.vel.x * 0.04;
+                    m.material.opacity = THREE.MathUtils.lerp(m.material.opacity, 1, 0.1);
+                });
+            } else {
+                const scrollOffset = worksContainer.scrollTop * wuPerPx;
+                ideas.forEach((m) => {
+                    const d = m.userData;
+                    if (d.index < 60) {
+                        const finalT = d.targetPos.clone(); finalT.y += scrollOffset;
+                        m.position.lerp(finalT, 0.15);
+                        m.scale.lerp(new THREE.Vector3(d.targetScale, d.targetScale, d.targetScale), 0.15);
+                        m.material.opacity = THREE.MathUtils.lerp(m.material.opacity, 1, 0.15);
+                    } else {
+                        m.scale.lerp(new THREE.Vector3(0,0,0), 0.25);
+                        m.material.opacity = THREE.MathUtils.lerp(m.material.opacity, 0, 0.25);
+                    }
+                    m.rotation.z *= 0.9;
+                });
+            }
+            renderer.render(scene, camera);
+        }
+
+        function handleInteractionStart(x, y) {
+            mousePosition.set(x, y);
+            const raycaster = new THREE.Raycaster();
+            const mouse = new THREE.Vector2((x/window.innerWidth)*2-1, -(y/window.innerHeight)*2+1);
+            raycaster.setFromCamera(mouse, camera);
+            const hits = raycaster.intersectObjects(ideas);
+            if (hits.length > 0 && hits[0].object.material.opacity > 0.5) {
+                draggedObject = hits[0].object;
+                longPressTimer = setTimeout(() => { isDragging = true; }, LONG_PRESS_THRESHOLD);
+            }
+        }
+        function handleInteractionMove(x, y) {
+            mousePosition.set(x, y);
+            if (isDragging && draggedObject) {
+                draggedObject.position.x = (x - window.innerWidth / 2) * wuPerPx;
+                draggedObject.position.y = -(y - window.innerHeight / 2) * wuPerPx;
+            }
+        }
+        function handleInteractionEnd() {
+            clearTimeout(longPressTimer);
+            if (!isDragging && draggedObject) openDetail(draggedObject.userData.data);
+            isDragging = false; draggedObject = null;
+        }
+
+        window.addEventListener('mousedown', (e) => { if(currentMode === 'PLAYGROUND') handleInteractionStart(e.clientX, e.clientY); });
+        window.addEventListener('mousemove', (e) => { handleInteractionMove(e.clientX, e.clientY); });
+        window.addEventListener('mouseup', handleInteractionEnd);
+        window.addEventListener('touchstart', (e) => { if(currentMode === 'PLAYGROUND') handleInteractionStart(e.touches[0].clientX, e.touches[0].clientY); });
+        window.addEventListener('touchmove', (e) => { handleInteractionMove(e.touches[0].clientX, e.touches[0].clientY); });
+        window.addEventListener('touchend', handleInteractionEnd);
+
+        function openDetail(data) {
+            isDetailOpen = true;
+            document.getElementById('detail-title').innerText = data.title;
+            const flow = document.getElementById('image-flow');
+            flow.innerHTML = '';
+            for(let i=1; i<=4; i++) {
+                const img = document.createElement('img');
+                img.src = `https://picsum.photos/seed/${data.title + i}/1500/1000`;
+                flow.appendChild(img);
+            }
+            document.getElementById('project-detail').classList.add('active');
+        }
+        function handleDetailClick(e) { if (e.target.tagName !== 'IMG') closeDetail(); }
+        function closeDetail() { isDetailOpen = false; document.getElementById('project-detail').classList.remove('active'); }
+
+        window.addEventListener('resize', () => {
+            if (!camera || !renderer) return;
+            camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            const vFOV = THREE.MathUtils.degToRad(camera.fov);
+            wuPerPx = (2 * Math.tan(vFOV / 2) * camera.position.z) / window.innerHeight;
+            if (currentMode === 'WORKS') calcGridTargets();
+        });
+
+        initThreeJS();
+        setCameraStatus(true); 
+    </script>
+</body>
+</html>
